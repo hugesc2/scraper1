@@ -2,10 +2,13 @@ import requests
 from bs4 import BeautifulSoup
 import pandas as pd
 from google.cloud import storage
+from flask import Flask, jsonify
 import os
 import datetime
 
-def scrape():
+app = Flask(__name__)
+
+def scrape_data():
     url = "https://www.scrapethissite.com/pages/simple/"
     res = requests.get(url)
     soup = BeautifulSoup(res.text, 'html.parser')
@@ -25,24 +28,35 @@ def scrape():
             "Area": float(area)
         })
 
-    df = pd.DataFrame(data)
-    return df
+    return pd.DataFrame(data)
 
 def upload_to_gcs(bucket_name, df):
     storage_client = storage.Client()
-    bucket = storage_client.get_bucket(bucket_name)
+    bucket = storage_client.bucket(bucket_name)
 
-    now = datetime.datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
+    now = datetime.datetime.utcnow().strftime('%Y-%m-%d_%H-%M-%S')
     filename = f"scraped_countries_{now}.csv"
-    df.to_csv(filename, index=False)
+    temp_path = f"/tmp/{filename}"
+
+    df.to_csv(temp_path, index=False)
 
     blob = bucket.blob(filename)
-    blob.upload_from_filename(filename)
-    print(f"Uploaded {filename} to {bucket_name}")
+    blob.upload_from_filename(temp_path)
 
-def main():
-    df = scrape()
-    upload_to_gcs("rpa-poc-files", df)
+    return filename
+
+@app.route("/scrape", methods=["GET"])
+def run_scraper():
+    try:
+        df = scrape_data()
+        filename = upload_to_gcs("rpa-poc-files", df)
+        return jsonify({"status": "success", "file_uploaded": filename}), 200
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+@app.route("/", methods=["GET"])
+def index():
+    return "Scraper service is running. Use /scrape to trigger scraping.", 200
 
 if __name__ == "__main__":
-    main()
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
